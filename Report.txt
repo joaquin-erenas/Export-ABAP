@@ -1,0 +1,130 @@
+*&---------------------------------------------------------------------*
+*& Report Z_J_EXPORTAR
+*&---------------------------------------------------------------------*
+*&
+*&---------------------------------------------------------------------*
+REPORT z_j_exportar.
+
+
+PARAMETERS:
+  n       TYPE string, " Nombre de la carpeta
+  archivo TYPE string, " Nombre del archivo
+  modo    TYPE string. " TXT, ODT, PDF VÁLIDOS
+
+
+DATA:
+  ruta        TYPE string,
+  tipoArchivo TYPE filetype,
+  valido      TYPE abap_bool VALUE abap_false.
+
+
+IF n NS 'C:\'.
+  ruta = 'C:\' && n && '\' && archivo && '.' && modo.
+ELSE.
+  ruta = n && '\' && archivo && '.' && modo.
+ENDIF.
+
+
+SELECT * FROM sflight
+  INTO TABLE @DATA(it_vuelos). " Se creará una tabla interna en el momento en el que se ejecuta la sentencia a la base de datos
+
+TRY.
+    IF modo EQ 'TXT'.
+      tipoArchivo = 'DAT'.
+*      ruta = 'C:\' && n && '\' && archivo && '.' && 'txt'.
+      valido = abap_true.
+    ELSEIF modo EQ 'ODT'.
+      tipoarchivo = 'WK1'. " También podría ser de tipo DBF
+*      ruta = 'C:\' && n && '\' && archivo && '.' && 'odt'.
+      valido = abap_true.
+    ELSEIF modo EQ 'PDF'.
+*      ruta = 'C:\' && n && '\' && archivo && '.' && 'pdf'.
+      valido = abap_true.
+    ENDIF.
+
+    IF valido EQ abap_true.
+      IF modo EQ 'TXT' OR modo EQ 'ODT'.
+        PERFORM exportar_NO_PDF.
+      ELSE.
+        PERFORM exportar_PDF.
+      ENDIF.
+    ENDIF.
+
+  CATCH cx_root INTO DATA(excepcion_text).
+    MESSAGE 'Error: ' && excepcion_text->get_text( ) TYPE 'I'.
+ENDTRY.
+
+FORM exportar_NO_PDF.
+  cl_gui_frontend_services=>gui_download(
+EXPORTING
+  filename = ruta " La ruta en la que se guardará el archivo
+  filetype = tipoarchivo " Servirá para determinar el tipo de archivo, ejecutará la función MASS_DOWNLOAD (DAT) | Otros tipos -> DBF,WK1,VSS
+                   " VSS no funciona en este caso, DBF y WK1 exportarán los datos en una cuadrícula de una forma más ordenada
+  codepage = '4110' " Este número implementará una codificación de UTF-8
+CHANGING
+  data_tab = it_vuelos ).
+ENDFORM.
+
+
+FORM exportar_PDF.
+  DATA ls_parametros TYPE pri_params.
+
+  CALL FUNCTION 'GET_PRINT_PARAMETERS'
+    EXPORTING
+      no_dialog              = abap_true
+    IMPORTING
+      out_parameters         = ls_parametros
+    EXCEPTIONS
+      archive_info_not_found = 1
+      invalid_print_params   = 2
+      invalid_archive_params = 3
+      OTHERS                 = 4.
+
+  IF sy-subrc EQ 0.
+*    SUBMIT z_j_alv01 TO SAP-SPOOL
+*    SPOOL PARAMETERS ls_parametros
+*    WITHOUT SPOOL DYNPRO
+*    AND RETURN.
+
+    NEW-PAGE PRINT ON PARAMETERS ls_parametros NO DIALOG.
+
+    SELECT * FROM sflight INTO TABLE @DATA(it_vuelos).
+    LOOP AT it_vuelos INTO DATA(ls_vuelos).
+      WRITE: / ls_vuelos-carrid,ls_vuelos-connid, ls_vuelos-fldate.
+
+    ENDLOOP.
+
+    NEW-PAGE PRINT OFF.
+    COMMIT WORK.
+
+    " CONVERTIR A PDF
+
+
+    DATA: lv_bin_length  TYPE i,
+          lv_xstring_pdf TYPE xstring.
+
+    CALL FUNCTION 'CONVERT_ABAPSPOOLJOB_2_PDF'
+      EXPORTING
+        src_spoolid          = CONV tsp01-rqident( sy-spono )
+        no_dialog            = abap_true
+        pdf_destination      = 'X'
+        get_size_from_format = abap_true
+      IMPORTING
+        pdf_bytecount        = lv_bin_length
+        bin_file             = lv_xstring_pdf.
+
+    DATA(it_raw_data) = cl_bcs_convert=>xstring_to_solix( lv_xstring_pdf ).
+
+    cl_gui_frontend_services=>gui_download(
+    EXPORTING
+      filename = ruta
+    filetype = 'BIN'
+    bin_filesize = lv_bin_length
+    CHANGING
+      data_tab = it_raw_data ).
+
+  ELSE.
+    MESSAGE 'Error en la función print_parameters' TYPE 'I'.
+  ENDIF.
+
+ENDFORM.
